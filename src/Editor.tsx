@@ -13,7 +13,7 @@ interface Props {
 
 export function Editor({ content, onChange }: Props) {
   const onChangeRef = useRef(onChange)
-  onChangeRef.current = onChange
+  useEffect(() => { onChangeRef.current = onChange })
 
   const editor = useEditor({
     extensions: [

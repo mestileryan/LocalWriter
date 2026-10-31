@@ -1,32 +1,25 @@
-# React + TypeScript + Vite
+# LocalWriter
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Un Notion-like minimaliste, gratuit et pensé d'abord pour le mobile.
 
-Currently, two official plugins are available:
+- **Local-first** : tout est stocké sur l'appareil (IndexedDB). Aucun compte, aucun serveur.
+- **PWA** : installable sur l'écran d'accueil, fonctionne hors ligne.
+- **Mobile d'abord** : barre d'outils collée au-dessus du clavier, boutons de 48 px, indentation sans touche Tab.
+- **Pages imbriquées**, titres, listes, cases à cocher, citations, blocs de code.
+- **Export / import** JSON pour sauvegarder ou passer d'un appareil à l'autre.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Application : https://mestileryan.github.io/LocalWriter/
 
-## React Compiler
+## Développement
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
+```sh
+npm install
+npm run dev      # serveur local
+npm run build    # build de production dans dist/
+npm run lint
+npm run icons    # régénère les PNG de la PWA à partir de public/favicon.svg
 ```
 
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Stack : Vite, React, TypeScript, [TipTap](https://tiptap.dev) (éditeur), [Dexie](https://dexie.org) (IndexedDB), vite-plugin-pwa.
+
+Le déploiement sur GitHub Pages est automatique à chaque push sur `main` (`.github/workflows/deploy.yml`).

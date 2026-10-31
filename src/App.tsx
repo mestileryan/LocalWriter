@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import type { JSONContent } from '@tiptap/react'
 import { db, createPage, deletePage, exportAll, importAll, type Page } from './db'
@@ -46,12 +46,12 @@ function PageView({ page, onBack, onDelete }: { page: Page; onBack: () => void; 
 
   const pending = useRef<Partial<Page>>({})
 
-  const flush = () => {
+  const flush = useCallback(() => {
     window.clearTimeout(timer.current)
     const patch = pending.current
     pending.current = {}
     if (Object.keys(patch).length) db.pages.update(page.id, { ...patch, updatedAt: Date.now() })
-  }
+  }, [page.id])
   const save = (patch: Partial<Page>) => {
     pending.current = { ...pending.current, ...patch }
     window.clearTimeout(timer.current)
@@ -64,7 +64,7 @@ function PageView({ page, onBack, onDelete }: { page: Page; onBack: () => void; 
       window.removeEventListener('pagehide', flush)
       flush()
     }
-  }, [])
+  }, [flush])
 
   return (
     <main className="page">
@@ -76,7 +76,13 @@ function PageView({ page, onBack, onDelete }: { page: Page; onBack: () => void; 
         className="title"
         defaultValue={page.title}
         placeholder="Sans titre"
+        autoFocus={!page.title}
         onChange={(e) => save({ title: e.target.value })}
+        onKeyDown={(e) => {
+          if (e.key !== 'Enter') return
+          e.preventDefault()
+          document.querySelector<HTMLElement>('.ProseMirror')?.focus()
+        }}
       />
       <Editor content={page.content} onChange={(content: JSONContent) => save({ content })} />
     </main>
@@ -85,9 +91,15 @@ function PageView({ page, onBack, onDelete }: { page: Page; onBack: () => void; 
 
 export default function App() {
   const [id, setId] = useHashId()
-  const pages = useLiveQuery(() => db.pages.orderBy('updatedAt').reverse().toArray(), [])
+  const pages = useLiveQuery(() => db.pages.orderBy('createdAt').toArray(), [])
   const fileRef = useRef<HTMLInputElement>(null)
   const current = useMemo(() => pages?.find((p) => p.id === id) ?? null, [pages, id])
+  // Une page dont le parent n'existe plus (import partiel, par ex.) remonte à la racine au lieu de disparaître.
+  const tree = useMemo(() => {
+    if (!pages) return []
+    const ids = new Set(pages.map((p) => p.id))
+    return pages.map((p) => (p.parentId && !ids.has(p.parentId) ? { ...p, parentId: null } : p))
+  }, [pages])
 
   const add = async (parentId: string | null) => setId(await createPage(parentId))
 
@@ -114,7 +126,7 @@ export default function App() {
         </header>
         <div className="list">
           {pages.length === 0 && <p className="empty">Aucune page. Créez-en une avec le bouton ＋.</p>}
-          <PageTree pages={pages} parentId={null} depth={0} currentId={id} onOpen={setId} onAddChild={add} />
+          <PageTree pages={tree} parentId={null} depth={0} currentId={id} onOpen={setId} onAddChild={add} />
         </div>
         <footer className="sidebar-foot">
           <button onClick={doExport}>Exporter</button>
