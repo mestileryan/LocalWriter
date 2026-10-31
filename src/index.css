@@ -33,8 +33,13 @@ h1 { font-size: 1.1rem; margin: 0; }
 .row:hover, .row.current { background: var(--hover); }
 .row-main { flex: 1; text-align: left; padding: 12px 8px; min-height: var(--tap); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .row-add { width: var(--tap); height: var(--tap); color: var(--muted); font-size: 1.2rem; }
-.sidebar-foot { display: flex; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.sidebar-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
 .sidebar-foot button { flex: 1; min-height: 40px; border: 1px solid var(--line); border-radius: 8px; }
+.version { flex: none; font-size: 0.7rem; color: var(--muted); font-family: ui-monospace, monospace; }
+
+/* Bannière de mise à jour, au-dessus de tout. */
+.toast { position: fixed; top: 8px; left: 50%; transform: translateX(-50%); z-index: 50; display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--fg); color: var(--bg); border-radius: 12px; box-shadow: 0 4px 16px #0005; white-space: nowrap; }
+.toast button { min-height: 36px; padding: 0 12px; border-radius: 8px; background: var(--accent); color: #fff; font-weight: 600; }
 .fab { position: absolute; right: 16px; bottom: 72px; width: 56px; height: 56px; border-radius: 50%; background: var(--accent); color: #fff; font-size: 1.8rem; box-shadow: 0 4px 12px #0004; }
 
 .page { position: relative; display: flex; flex-direction: column; min-height: 0; min-width: 0; overflow-y: auto; }

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
+import { useRegisterSW } from 'virtual:pwa-register/react'
 import type { JSONContent } from '@tiptap/react'
 import { db, createPage, deletePage, exportAll, importAll, type Page } from './db'
 import { Editor } from './Editor'
@@ -117,6 +118,16 @@ function PageView({ page, onBack, onDelete }: { page: Page; onBack: () => void; 
 export default function App() {
   const [id, setId] = useHashId()
   const [query, setQuery] = useState('')
+  // Mise à jour de la PWA : vérification à chaque retour au premier plan (une PWA Android reste
+  // en mémoire des jours), bannière quand une version est prête.
+  const { needRefresh: [needRefresh], updateServiceWorker } = useRegisterSW({
+    onRegisteredSW(_url, reg) {
+      if (!reg) return
+      const check = () => { if (document.visibilityState === 'visible') reg.update() }
+      document.addEventListener('visibilitychange', check)
+      window.setInterval(check, 60 * 60 * 1000)
+    },
+  })
   const pages = useLiveQuery(() => db.pages.orderBy('createdAt').toArray(), [])
   const fileRef = useRef<HTMLInputElement>(null)
   const current = useMemo(() => pages?.find((p) => p.id === id) ?? null, [pages, id])
@@ -146,6 +157,12 @@ export default function App() {
   if (!pages) return null
   return (
     <div className={`app${current ? ' has-page' : ''}`}>
+      {needRefresh && (
+        <div className="toast" role="status">
+          Nouvelle version disponible
+          <button onClick={() => updateServiceWorker(true)}>Mettre à jour</button>
+        </div>
+      )}
       <nav className="sidebar">
         <header className="topbar">
           <h1>LocalWriter</h1>
@@ -170,6 +187,7 @@ export default function App() {
           <button onClick={() => fileRef.current?.click()}>Importer</button>
           <input ref={fileRef} type="file" accept="application/json" hidden
             onChange={(e) => { const f = e.target.files?.[0]; if (f) doImport(f); e.target.value = '' }} />
+          <span className="version" title="Version (commit)">{__APP_VERSION__}</span>
         </footer>
         <button className="fab" aria-label="Nouvelle page" onClick={() => add(null)}>＋</button>
       </nav>
