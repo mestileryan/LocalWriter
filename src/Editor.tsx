@@ -4,10 +4,9 @@ import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { TaskList } from '@tiptap/extension-task-list'
 import { TaskItem } from '@tiptap/extension-task-item'
-import { TextSelection } from '@tiptap/pm/state'
-import type { ResolvedPos } from '@tiptap/pm/model'
 import type { ChainedCommands, Editor as TipTapEditor, JSONContent } from '@tiptap/react'
 import { norm } from './text'
+import { lines, lineAt, relocate, targets, type Line } from './blocks'
 
 interface Props {
   content: JSONContent | null
@@ -63,44 +62,17 @@ export function Editor({ content, onChange }: Props) {
   )
 }
 
-// Profondeur du « bloc déplaçable » : l'élément de liste englobant s'il y en a un, sinon le bloc de premier niveau.
-function blockDepth($pos: ResolvedPos): number {
-  for (let d = $pos.depth; d >= 1; d--) {
-    const name = $pos.node(d).type.name
-    if (name === 'listItem' || name === 'taskItem') return d
-  }
-  return 1
-}
-// Identifie le parent d'un bloc, pour n'autoriser le dépôt qu'entre frères (le schéma refuserait le reste).
-const parentKey = ($pos: ResolvedPos, depth: number) => (depth === 1 ? -1 : $pos.before(depth - 1))
+type Targets = ReturnType<typeof targets>
 
-// Déplace d'un cran le bloc courant.
-function moveBlock(editor: TipTapEditor, dir: -1 | 1): boolean {
-  const { state, view } = editor
-  const { $from } = state.selection
-  if ($from.depth < 1) return false
-  const depth = blockDepth($from)
-  const node = $from.node(depth)
-  const parent = $from.node(depth - 1)
-  const index = $from.index(depth - 1)
-  const target = index + dir
-  if (target < 0 || target >= parent.childCount) return false
-  const sibling = parent.child(target)
-  const start = $from.before(depth)
-  const end = $from.after(depth)
-  const offset = $from.pos - start
-  const tr = state.tr
-  let cursor: number
-  if (dir === -1) {
-    tr.replaceWith(start - sibling.nodeSize, end, [node, sibling])
-    cursor = start - sibling.nodeSize + offset
-  } else {
-    tr.replaceWith(start, end + sibling.nodeSize, [sibling, node])
-    cursor = start + sibling.nodeSize + offset
-  }
-  tr.setSelection(TextSelection.create(tr.doc, cursor)).scrollIntoView()
-  view.dispatch(tr)
-  view.focus()
+// Déplace la ligne courante vers une des cibles calculées par `targets` (↑ ↓ ⇤ ⇥).
+function moveLine(editor: TipTapEditor, pick: (t: Targets) => number | null): boolean {
+  const t = targets(editor.state)
+  const target = pick(t)
+  if (!t.line || target === null) return false
+  const tr = relocate(editor.state, t.line, target)
+  if (!tr) return false
+  editor.view.dispatch(tr)
+  editor.view.focus()
   return true
 }
 
@@ -118,17 +90,15 @@ function BlockHandle({ editor }: { editor: TipTapEditor }) {
   const info = useEditorState({
     editor,
     selector: ({ editor: e }) => {
-      const { $from } = e.state.selection
-      if ($from.depth < 1) return null
-      const depth = blockDepth($from)
+      const line = lineAt(lines(e.state.doc), e.state.selection.from)
       // docSize force une nouvelle mesure quand le texte change de hauteur.
-      return { start: $from.before(depth), end: $from.after(depth), depth, docSize: e.state.doc.content.size }
+      return line ? { start: line.pos, docSize: e.state.doc.content.size } : null
     },
   })
   const [drop, setDrop] = useState<{ top: number; left: number; width: number } | null>(null)
   // Calque posé sur le bloc source pendant le glisser (ProseMirror effacerait une classe ajoutée à son DOM).
   const [ghost, setGhost] = useState<{ top: number; left: number; width: number; height: number } | null>(null)
-  const drag = useRef<{ start: number; end: number; parent: number; target?: { pos: number } } | null>(null)
+  const drag = useRef<{ line: Line; ls: Line[]; target?: number } | null>(null)
 
   const scroller = () => editor.view.dom.closest<HTMLElement>('.page')
   const rel = (el: Element) => relRect(scroller(), el)
@@ -144,13 +114,14 @@ function BlockHandle({ editor }: { editor: TipTapEditor }) {
   }, [info, editor])
 
   const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
-    if (!info) return
+    const ls = lines(editor.state.doc)
+    const line = lineAt(ls, editor.state.selection.from)
+    if (!line) return
     e.preventDefault()
-    const dom = editor.view.nodeDOM(info.start)
+    const dom = editor.view.nodeDOM(line.pos)
     if (!(dom instanceof HTMLElement)) return
     e.currentTarget.setPointerCapture(e.pointerId)
-    const $from = editor.state.doc.resolve(info.start + 1)
-    drag.current = { start: info.start, end: info.end, parent: parentKey($from, info.depth) }
+    drag.current = { line, ls }
     setGhost(rel(dom))
     navigator.vibrate?.(10)
   }
@@ -168,21 +139,17 @@ function BlockHandle({ editor }: { editor: TipTapEditor }) {
     const edRect = editor.view.dom.getBoundingClientRect()
     const hit = editor.view.posAtCoords({ left: edRect.left + 60, top: e.clientY })
     if (!hit) return
-    const $t = editor.state.doc.resolve(hit.pos)
-    // On remonte jusqu'à un bloc frère du bloc déplacé.
-    let depth = 0
-    for (let k = $t.depth; k >= 1; k--) if (parentKey($t, k) === d.parent) { depth = k; break }
-    if (!depth) { d.target = undefined; setDrop(null); return }
-    const tStart = $t.before(depth)
-    const tEnd = $t.after(depth)
-    if (tStart === d.start) { d.target = undefined; setDrop(null); return }
-    const tDom = editor.view.nodeDOM(tStart)
+    // Ligne sous le doigt, n'importe où dans le document, sauf le bloc déplacé lui-même.
+    const t = lineAt(d.ls, hit.pos)
+    const src = d.line
+    if (!t || (t.pos >= src.pos && t.pos < src.pos + src.node.nodeSize)) { d.target = undefined; setDrop(null); return }
+    const tDom = editor.view.nodeDOM(t.pos)
     if (!(tDom instanceof HTMLElement)) return
     const r = rel(tDom)
     if (!r) return
     const box = tDom.getBoundingClientRect()
     const after = e.clientY > box.top + box.height / 2
-    d.target = { pos: after ? tEnd : tStart }
+    d.target = after ? t.pos + t.node.nodeSize : t.pos
     setDrop({ top: after ? r.top + r.height : r.top, left: r.left, width: r.width })
   }
 
@@ -192,15 +159,9 @@ function BlockHandle({ editor }: { editor: TipTapEditor }) {
     drag.current = null
     setGhost(null)
     setDrop(null)
-    if (!d.target) return
-    const { state, view } = editor
-    const node = state.doc.nodeAt(d.start)
-    if (!node) return
-    const tr = state.tr.delete(d.start, d.end)
-    const ins = tr.mapping.map(d.target.pos)
-    tr.insert(ins, node)
-    tr.setSelection(TextSelection.near(tr.doc.resolve(ins + 1))).scrollIntoView()
-    view.dispatch(tr)
+    if (d.target === undefined) return
+    const tr = relocate(editor.state, d.line, d.target)
+    if (tr) editor.view.dispatch(tr)
   }
 
   if (!pos) return null
@@ -307,8 +268,9 @@ function Toolbar({ editor }: { editor: TipTapEditor }) {
       // Impossible d'envelopper un élément de liste dans une citation : on grise plutôt que de laisser un bouton muet.
       canQuote: e.isActive('blockquote') || e.can().toggleBlockquote(),
       code: e.isActive('codeBlock'),
-      canSink: e.can().sinkListItem('listItem') || e.can().sinkListItem('taskItem'),
-      canLift: e.can().liftListItem('listItem') || e.can().liftListItem('taskItem'),
+      ...(({ up, down, indent, outdent }) => ({
+        canUp: up !== null, canDown: down !== null, canIndent: indent !== null, canOutdent: outdent !== null,
+      }))(targets(e.state)),
     }),
   })
   const c = () => editor.chain().focus()
@@ -336,14 +298,10 @@ function Toolbar({ editor }: { editor: TipTapEditor }) {
       {btn('☑', s.task, () => c().toggleTaskList().run(), false, 'Tâches')}
       {btn('•', s.bullet, () => c().toggleBulletList().run(), false, 'Liste à puces')}
       {btn('1.', s.ordered, () => c().toggleOrderedList().run(), false, 'Liste numérotée')}
-      {btn('⇤', false, () => {
-        if (!c().liftListItem('taskItem').run()) c().liftListItem('listItem').run()
-      }, !s.canLift, 'Désindenter')}
-      {btn('⇥', false, () => {
-        if (!c().sinkListItem('taskItem').run()) c().sinkListItem('listItem').run()
-      }, !s.canSink, 'Indenter')}
-      {btn('↑', false, () => moveBlock(editor, -1), false, 'Monter le bloc')}
-      {btn('↓', false, () => moveBlock(editor, 1), false, 'Descendre le bloc')}
+      {btn('⇤', false, () => moveLine(editor, (t) => t.outdent), !s.canOutdent, 'Désindenter')}
+      {btn('⇥', false, () => moveLine(editor, (t) => t.indent), !s.canIndent, 'Indenter')}
+      {btn('↑', false, () => moveLine(editor, (t) => t.up), !s.canUp, 'Monter le bloc')}
+      {btn('↓', false, () => moveLine(editor, (t) => t.down), !s.canDown, 'Descendre le bloc')}
       {btn('B', s.bold, () => c().toggleBold().run(), false, 'Gras')}
       {btn('I', s.italic, () => c().toggleItalic().run(), false, 'Italique')}
       {btn('H1', s.h1, () => c().toggleHeading({ level: 1 }).run(), false, 'Titre 1')}
