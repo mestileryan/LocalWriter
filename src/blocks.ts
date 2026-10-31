@@ -30,6 +30,14 @@ export function lines(doc: PMNode): Line[] {
       else if (isItem(child)) {
         out.push({ pos, node: child, parent, list: node.type })
         walk(child, pos + 1, pos, true)
+      } else if (child.type.name === 'details') {
+        // Bloc pliable : la ligne est le titre, les blocs du contenu sont ses enfants.
+        out.push({ pos, node: child, parent })
+        let off = pos + 1
+        child.forEach((sub) => {
+          if (sub.type.name === 'detailsContent') walk(sub, off + 1, pos, false)
+          off += sub.nodeSize
+        })
       } else out.push({ pos, node: child, parent })
     })
   }
@@ -46,6 +54,12 @@ export function lineAt(ls: Line[], pos: number): Line | null {
 
 const siblings = (ls: Line[], line: Line) => ls.filter((l) => l.parent === line.parent)
 const after = (l: Line) => l.pos + l.node.nodeSize
+// Fin du contenu enfant d'une ligne qui peut en avoir (élément de liste, bloc pliable), ou null.
+function childrenEnd(l: Line): number | null {
+  if (isItem(l.node)) return after(l) - 1
+  if (l.node.type.name === 'details') return after(l) - 2
+  return null
+}
 
 // Cibles possibles depuis la ligne sous le curseur (null = action impossible, bouton à griser).
 export function targets(state: EditorState) {
@@ -61,8 +75,8 @@ export function targets(state: EditorState) {
     line,
     up: prev ? prev.pos : parent ? parent.pos : null,
     down: next ? after(next) : parent ? after(parent) : null,
-    // Indenter : devenir le dernier enfant de la ligne précédente, si c'est un élément de liste.
-    indent: prev && isItem(prev.node) ? after(prev) - 1 : null,
+    // Indenter : devenir le dernier enfant de la ligne précédente (élément de liste ou bloc pliable).
+    indent: prev ? childrenEnd(prev) : null,
     // Désindenter : ressortir juste après le parent.
     outdent: parent ? after(parent) : null,
   }
@@ -72,6 +86,8 @@ export function targets(state: EditorState) {
 function deleteLine(tr: Transaction, line: Line) {
   const $p = tr.doc.resolve(line.pos)
   if (isList($p.parent) && $p.parent.childCount === 1) tr.delete($p.before(), $p.after())
+  // Le contenu d'un bloc pliable ne peut pas être vide : on laisse un paragraphe.
+  else if ($p.parent.type.name === 'detailsContent' && $p.parent.childCount === 1) tr.replaceWith(line.pos, after(line), tr.doc.type.schema.nodes.paragraph.create())
   else tr.delete(line.pos, after(line))
 }
 

@@ -86,6 +86,22 @@ h1 { font-size: 1.1rem; margin: 0; }
 .slash-menu button.active { background: var(--accent); border-color: var(--accent); color: #fff; }
 .editor hr { border: 0; border-top: 1px solid var(--line); margin: 16px 0; }
 
+/* Bloc pliable : chevron + titre, contenu masqué quand replié. */
+.editor [data-type='details'] { display: flex; gap: 2px; align-items: flex-start; }
+.editor [data-type='details'] > button { flex: none; width: 28px; height: 1.6em; margin-top: 0.2em; display: flex; align-items: center; justify-content: center; color: var(--muted); border-radius: 6px; font-size: 1.3rem; }
+.editor [data-type='details'] > button::before { content: '▸'; transition: transform 0.15s; }
+.editor [data-type='details'].is-open > button::before { transform: rotate(90deg); }
+.editor [data-type='details'] > div { flex: 1; min-width: 0; }
+.editor [data-type='details'] summary { list-style: none; font-weight: 600; margin: 0.2em 0; }
+.editor [data-type='details'] summary::-webkit-details-marker { display: none; }
+.editor [data-type='detailsContent'][hidden] { display: none; }
+.editor [data-type='detailsContent'] > :first-child { margin-top: 0; }
+.editor .ProseMirror summary.is-empty::before { content: attr(data-placeholder); color: var(--muted); float: left; height: 0; pointer-events: none; }
+
+/* Images : pleine largeur, sélection visible. */
+.editor img { display: block; max-width: 100%; height: auto; border-radius: 8px; }
+.editor img.ProseMirror-selectednode { outline: 3px solid var(--accent); }
+
 /* Sur PC, la barre d'outils ne recouvre pas la barre latérale. */
 @media (min-width: 721px) {
   .toolbar, .slash-menu { left: 300px; }

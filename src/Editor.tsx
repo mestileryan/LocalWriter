@@ -4,9 +4,14 @@ import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import { TaskList } from '@tiptap/extension-task-list'
 import { TaskItem } from '@tiptap/extension-task-item'
+import Image from '@tiptap/extension-image'
+import { Details, DetailsSummary, DetailsContent } from '@tiptap/extension-details'
+import { TextSelection } from '@tiptap/pm/state'
+import type { EditorView } from '@tiptap/pm/view'
 import type { ChainedCommands, Editor as TipTapEditor, JSONContent } from '@tiptap/react'
 import { norm } from './text'
 import { lines, lineAt, relocate, targets, type Line } from './blocks'
+import { resolveSrc, storeImage } from './images'
 
 interface Props {
   content: JSONContent | null
@@ -19,6 +24,63 @@ const DEBUG = window.location.search.includes('debug')
 // Journal visible dans le panneau ?debug=1 (voir DebugOverlay).
 const dbg = (msg: string) => { if (DEBUG) window.dispatchEvent(new CustomEvent('lw-debug', { detail: msg })) }
 
+// Image dont la source `lw://<id>` est résolue depuis IndexedDB au rendu.
+const LocalImage = Image.extend({
+  addNodeView() {
+    return ({ node }) => {
+      const img = document.createElement('img')
+      img.alt = node.attrs.alt ?? ''
+      img.draggable = false
+      let current = ''
+      const load = (src: string) => {
+        if (src === current) return
+        current = src
+        resolveSrc(src).then((url) => { if (current === src) img.src = url })
+      }
+      load(node.attrs.src)
+      return {
+        dom: img,
+        update: (n) => {
+          if (n.type !== node.type) return false
+          load(n.attrs.src)
+          return true
+        },
+      }
+    }
+  },
+})
+
+// Entrée dans le titre d'un bloc pliable : on l'ouvre et on entre dans son contenu. Géré dans
+// handleKeyDown, avant tous les raccourcis des extensions (celui de Details insérerait un bloc).
+function enterInSummary(view: EditorView, event: KeyboardEvent): boolean {
+  if (event.key !== 'Enter') return false
+  const { $from } = view.state.selection
+  if ($from.parent.type.name !== 'detailsSummary') return false
+  const detailsPos = $from.before($from.depth - 1)
+  const details = view.state.doc.nodeAt(detailsPos)
+  if (!details) return false
+  const tr = view.state.tr.setNodeMarkup(detailsPos, undefined, { ...details.attrs, open: true })
+  const inside = detailsPos + 1 + details.child(0).nodeSize + 2
+  tr.setSelection(TextSelection.near(tr.doc.resolve(inside))).scrollIntoView()
+  view.dispatch(tr)
+  dbg(`enterInSummary → sel ${view.state.selection.from} dans ${view.state.selection.$from.parent.type.name}`)
+  return true
+}
+
+// Sélecteur de fichier (galerie ou appareil photo sur mobile), puis insertion de l'image réduite.
+function pickImage(editor: TipTapEditor) {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = 'image/*'
+  input.onchange = async () => {
+    const file = input.files?.[0]
+    if (!file) return
+    const src = await storeImage(file)
+    editor.chain().focus().setImage({ src, alt: file.name }).run()
+  }
+  input.click()
+}
+
 export function Editor({ content, onChange }: Props) {
   const onChangeRef = useRef(onChange)
   useEffect(() => { onChangeRef.current = onChange })
@@ -30,12 +92,28 @@ export function Editor({ content, onChange }: Props) {
       StarterKit,
       TaskList,
       TaskItem.configure({ nested: true }),
-      Placeholder.configure({ placeholder: 'Écrivez ici… (« / » pour insérer un bloc)' }),
+      LocalImage,
+      Details.configure({ persist: true }),
+      DetailsSummary,
+      DetailsContent,
+      Placeholder.configure({
+        placeholder: ({ node }) => (node.type.name === 'detailsSummary' ? 'Titre du bloc pliable' : 'Écrivez ici… (« / » pour insérer un bloc)'),
+      }),
     ],
     content: content ?? '',
     editorProps: { handleKeyDown: (_view, event) => slashKey.current(event) },
     onUpdate: ({ editor }) => onChangeRef.current(editor.getJSON()),
   })
+
+  // Entrée dans le titre d'un bloc pliable, capté avant ProseMirror : la vue de nœud de Details
+  // ne laisse pas passer la touche jusqu'à handleKeyDown.
+  useEffect(() => {
+    if (!editor) return
+    const dom = editor.view.dom
+    const onKey = (e: KeyboardEvent) => { if (enterInSummary(editor.view, e)) { e.preventDefault(); e.stopPropagation() } }
+    dom.addEventListener('keydown', onKey, true)
+    return () => dom.removeEventListener('keydown', onKey, true)
+  }, [editor])
 
   // Garde la barre d'outils collée au-dessus du clavier virtuel.
   useEffect(() => {
@@ -221,9 +299,12 @@ function BlockHandle({ editor }: { editor: TipTapEditor }) {
   )
 }
 
-interface SlashItem { label: string; keys: string; run: (c: ChainedCommands) => ChainedCommands }
+interface SlashItem { label: string; keys: string; run: (c: ChainedCommands) => ChainedCommands; after?: (editor: TipTapEditor) => void }
 const SLASH_ITEMS: SlashItem[] = [
   { label: 'Texte', keys: 'paragraphe', run: (c) => c.setParagraph() },
+  // Créé ouvert : replié, Entrée dans le titre créerait un nouveau bloc au lieu d'entrer dans le contenu.
+  { label: 'Pliable', keys: 'toggle plier déplier', run: (c) => c.setDetails().updateAttributes('details', { open: true }) },
+  { label: 'Image', keys: 'photo', run: (c) => c, after: pickImage },
   { label: 'Titre 1', keys: 'h1', run: (c) => c.setHeading({ level: 1 }) },
   { label: 'Titre 2', keys: 'h2', run: (c) => c.setHeading({ level: 2 }) },
   { label: 'Tâches', keys: 'todo case cocher', run: (c) => c.toggleTaskList() },
@@ -257,6 +338,7 @@ function SlashMenu({ editor, keyRef }: { editor: TipTapEditor; keyRef: RefObject
   const apply = (item: SlashItem) => {
     if (!slash) return
     item.run(editor.chain().focus().deleteRange({ from: slash.from, to: slash.to })).run()
+    item.after?.(editor)
   }
 
   useEffect(() => {
@@ -304,6 +386,8 @@ function Toolbar({ editor }: { editor: TipTapEditor }) {
       // Impossible d'envelopper un élément de liste dans une citation : on grise plutôt que de laisser un bouton muet.
       canQuote: e.isActive('blockquote') || e.can().toggleBlockquote(),
       code: e.isActive('codeBlock'),
+      details: e.isActive('details'),
+      canDetails: e.isActive('details') || e.can().setDetails(),
       ...(({ up, down, indent, outdent }) => ({
         canUp: up !== null, canDown: down !== null, canIndent: indent !== null, canOutdent: outdent !== null,
       }))(targets(e.state)),
@@ -344,6 +428,11 @@ function Toolbar({ editor }: { editor: TipTapEditor }) {
       {btn('H2', s.h2, () => c().toggleHeading({ level: 2 }).run(), false, 'Titre 2')}
       {btn('❝', s.quote, () => c().toggleBlockquote().run(), !s.canQuote, 'Citation')}
       {btn('</>', s.code, () => c().toggleCodeBlock().run(), false, 'Bloc de code')}
+      {btn('▸', s.details, () => {
+        if (s.details) c().unsetDetails().run()
+        else c().setDetails().updateAttributes('details', { open: true }).run()
+      }, !s.canDetails, 'Bloc pliable')}
+      {btn('🖼', false, () => pickImage(editor), false, 'Image')}
     </div>
   )
 }
