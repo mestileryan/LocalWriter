@@ -333,7 +333,7 @@ function Toolbar({ editor }: { editor: TipTapEditor }) {
       }, !s.canSink, 'Indenter')}
       {btn('↑', false, () => moveBlock(editor, -1), false, 'Monter le bloc')}
       {btn('↓', false, () => moveBlock(editor, 1), false, 'Descendre le bloc')}
-      {btn('☐', s.task, () => c().toggleTaskList().run(), false, 'Tâches')}
+      {btn('☑', s.task, () => c().toggleTaskList().run(), false, 'Tâches')}
       {btn('•', s.bullet, () => c().toggleBulletList().run(), false, 'Liste à puces')}
       {btn('1.', s.ordered, () => c().toggleOrderedList().run(), false, 'Liste numérotée')}
       {btn('H1', s.h1, () => c().toggleHeading({ level: 1 }).run(), false, 'Titre 1')}
