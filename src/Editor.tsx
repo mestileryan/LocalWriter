@@ -58,6 +58,7 @@ export function Editor({ content, onChange }: Props) {
       <BlockHandle editor={editor} />
       <SlashMenu editor={editor} keyRef={slashKey} />
       <Toolbar editor={editor} />
+      {window.location.search.includes('debug') && <DebugOverlay editor={editor} />}
     </>
   )
 }
@@ -303,45 +304,89 @@ function Toolbar({ editor }: { editor: TipTapEditor }) {
       ordered: e.isActive('orderedList'),
       task: e.isActive('taskList'),
       quote: e.isActive('blockquote'),
+      // Impossible d'envelopper un élément de liste dans une citation : on grise plutôt que de laisser un bouton muet.
+      canQuote: e.isActive('blockquote') || e.can().toggleBlockquote(),
       code: e.isActive('codeBlock'),
       canSink: e.can().sinkListItem('listItem') || e.can().sinkListItem('taskItem'),
       canLift: e.can().liftListItem('listItem') || e.can().liftListItem('taskItem'),
     }),
   })
   const c = () => editor.chain().focus()
-  // onMouseDown/preventDefault : évite de perdre le focus (et donc de fermer le clavier).
+  // preventDefault sur pointerdown ET mousedown : le bouton ne prend jamais le focus,
+  // l'éditeur garde le sien et le clavier reste ouvert (Android envoie les deux).
   const btn = (label: string, active: boolean, run: () => void, disabled = false, aria = label) => (
     <button
       type="button"
       className={active ? 'active' : ''}
       disabled={disabled}
       aria-label={aria}
+      onPointerDown={(e) => e.preventDefault()}
       onMouseDown={(e) => e.preventDefault()}
       onClick={run}
     >
       {label}
     </button>
   )
+  // Toujours les mêmes boutons dans le même ordre : un bouton qui apparaît décalerait les autres sous le doigt.
   return (
-    <div className="toolbar" role="toolbar">
-      {/* Indentation : remplace la touche Tab absente sur mobile, visible seulement dans une liste. */}
-      {(s.canLift || s.canSink) && btn('⇤', false, () => {
+    <div className="toolbar" role="toolbar" onScroll={(e) => {
+      const el = e.currentTarget
+      el.classList.toggle('at-end', el.scrollLeft + el.clientWidth >= el.scrollWidth - 2)
+    }}>
+      {btn('☑', s.task, () => c().toggleTaskList().run(), false, 'Tâches')}
+      {btn('•', s.bullet, () => c().toggleBulletList().run(), false, 'Liste à puces')}
+      {btn('1.', s.ordered, () => c().toggleOrderedList().run(), false, 'Liste numérotée')}
+      {btn('⇤', false, () => {
         if (!c().liftListItem('taskItem').run()) c().liftListItem('listItem').run()
       }, !s.canLift, 'Désindenter')}
-      {(s.canLift || s.canSink) && btn('⇥', false, () => {
+      {btn('⇥', false, () => {
         if (!c().sinkListItem('taskItem').run()) c().sinkListItem('listItem').run()
       }, !s.canSink, 'Indenter')}
       {btn('↑', false, () => moveBlock(editor, -1), false, 'Monter le bloc')}
       {btn('↓', false, () => moveBlock(editor, 1), false, 'Descendre le bloc')}
-      {btn('☑', s.task, () => c().toggleTaskList().run(), false, 'Tâches')}
-      {btn('•', s.bullet, () => c().toggleBulletList().run(), false, 'Liste à puces')}
-      {btn('1.', s.ordered, () => c().toggleOrderedList().run(), false, 'Liste numérotée')}
-      {btn('H1', s.h1, () => c().toggleHeading({ level: 1 }).run(), false, 'Titre 1')}
-      {btn('H2', s.h2, () => c().toggleHeading({ level: 2 }).run(), false, 'Titre 2')}
       {btn('B', s.bold, () => c().toggleBold().run(), false, 'Gras')}
       {btn('I', s.italic, () => c().toggleItalic().run(), false, 'Italique')}
-      {btn('❝', s.quote, () => c().toggleBlockquote().run(), false, 'Citation')}
+      {btn('H1', s.h1, () => c().toggleHeading({ level: 1 }).run(), false, 'Titre 1')}
+      {btn('H2', s.h2, () => c().toggleHeading({ level: 2 }).run(), false, 'Titre 2')}
+      {btn('❝', s.quote, () => c().toggleBlockquote().run(), !s.canQuote, 'Citation')}
       {btn('</>', s.code, () => c().toggleCodeBlock().run(), false, 'Bloc de code')}
     </div>
   )
+}
+
+// Panneau de diagnostic (`?debug=1`) : viewport, clavier, focus, composition IME et événements sur les commandes.
+function DebugOverlay({ editor }: { editor: TipTapEditor }) {
+  const [snap, setSnap] = useState('')
+  const [events, setEvents] = useState<string[]>([])
+  useEffect(() => {
+    const vv = window.visualViewport
+    const tick = () => setSnap(
+      `ih=${window.innerHeight} vv=${Math.round(vv?.height ?? 0)}+${Math.round(vv?.offsetTop ?? 0)} ` +
+      `kb=${getComputedStyle(document.documentElement).getPropertyValue('--kb').trim()} ` +
+      `comp=${editor.view.composing ? 1 : 0} focus=${document.activeElement?.className.split(' ')[0] || document.activeElement?.tagName} ` +
+      `sel=${editor.state.selection.from}`,
+    )
+    const id = window.setInterval(tick, 300)
+    const log = (s: string) => setEvents((l) => [...l.slice(-7), `${new Date().toISOString().slice(14, 23)} ${s}`])
+    const onEv = (e: Event) => {
+      const t = e.target instanceof Element ? e.target.closest('button') : null
+      if (t?.closest('.toolbar, .block-handle, .slash-menu')) log(`${e.type} ${t.getAttribute('aria-label') ?? t.textContent}`)
+    }
+    const types = ['pointerdown', 'pointerup', 'mousedown', 'click', 'touchend']
+    types.forEach((ty) => document.addEventListener(ty, onEv, true))
+    const onBlur = () => log('editor blur')
+    const onFocus = () => log('editor focus')
+    editor.on('blur', onBlur)
+    editor.on('focus', onFocus)
+    const onErr = (e: ErrorEvent) => log(`ERREUR ${e.message}`)
+    window.addEventListener('error', onErr)
+    return () => {
+      window.clearInterval(id)
+      types.forEach((ty) => document.removeEventListener(ty, onEv, true))
+      editor.off('blur', onBlur)
+      editor.off('focus', onFocus)
+      window.removeEventListener('error', onErr)
+    }
+  }, [editor])
+  return <pre className="debug">{snap}{'\n'}{events.join('\n')}</pre>
 }
