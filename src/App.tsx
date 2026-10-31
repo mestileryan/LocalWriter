@@ -3,6 +3,31 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import type { JSONContent } from '@tiptap/react'
 import { db, createPage, deletePage, exportAll, importAll, type Page } from './db'
 import { Editor } from './Editor'
+import { norm, plainText } from './text'
+
+// Résultats de recherche : titre + extrait autour de la première occurrence.
+function SearchResults({ pages, query, onOpen }: { pages: Page[]; query: string; onOpen: (id: string) => void }) {
+  const q = norm(query)
+  const hits = pages.flatMap((p) => {
+    const text = plainText(p.content)
+    const inTitle = norm(p.title).includes(q)
+    const at = norm(text).indexOf(q)
+    if (!inTitle && at < 0) return []
+    const snippet = at < 0 ? text.slice(0, 80) : text.slice(Math.max(0, at - 30), at + 50)
+    return [{ page: p, snippet }]
+  })
+  if (!hits.length) return <p className="empty">Aucun résultat.</p>
+  return (
+    <>
+      {hits.map(({ page, snippet }) => (
+        <button key={page.id} className="hit" onClick={() => onOpen(page.id)}>
+          <span className="hit-title">{page.title || 'Sans titre'}</span>
+          {snippet && <span className="hit-snippet">{snippet}</span>}
+        </button>
+      ))}
+    </>
+  )
+}
 
 function useHashId(): [string | null, (id: string | null) => void] {
   const read = () => window.location.hash.replace(/^#\/?/, '') || null
@@ -91,6 +116,7 @@ function PageView({ page, onBack, onDelete }: { page: Page; onBack: () => void; 
 
 export default function App() {
   const [id, setId] = useHashId()
+  const [query, setQuery] = useState('')
   const pages = useLiveQuery(() => db.pages.orderBy('createdAt').toArray(), [])
   const fileRef = useRef<HTMLInputElement>(null)
   const current = useMemo(() => pages?.find((p) => p.id === id) ?? null, [pages, id])
@@ -124,9 +150,20 @@ export default function App() {
         <header className="topbar">
           <h1>LocalWriter</h1>
         </header>
+        <input
+          className="search"
+          type="search"
+          placeholder="Rechercher…"
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
         <div className="list">
-          {pages.length === 0 && <p className="empty">Aucune page. Créez-en une avec le bouton ＋.</p>}
-          <PageTree pages={tree} parentId={null} depth={0} currentId={id} onOpen={setId} onAddChild={add} />
+          {query.trim()
+            ? <SearchResults pages={pages} query={query.trim()} onOpen={setId} />
+            : <>
+                {pages.length === 0 && <p className="empty">Aucune page. Créez-en une avec le bouton ＋.</p>}
+                <PageTree pages={tree} parentId={null} depth={0} currentId={id} onOpen={setId} onAddChild={add} />
+              </>}
         </div>
         <footer className="sidebar-foot">
           <button onClick={doExport}>Exporter</button>
