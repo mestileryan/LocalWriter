@@ -85,10 +85,11 @@ function Toolbar({ editor }: { editor: TipTapEditor }) {
   )
   return (
     <div className="toolbar" role="toolbar">
-      {btn('⇤', false, () => {
+      {/* Indentation : remplace la touche Tab absente sur mobile, visible seulement dans une liste. */}
+      {(s.canLift || s.canSink) && btn('⇤', false, () => {
         if (!c().liftListItem('taskItem').run()) c().liftListItem('listItem').run()
       }, !s.canLift, 'Désindenter')}
-      {btn('⇥', false, () => {
+      {(s.canLift || s.canSink) && btn('⇥', false, () => {
         if (!c().sinkListItem('taskItem').run()) c().sinkListItem('listItem').run()
       }, !s.canSink, 'Indenter')}
       {btn('☐', s.task, () => c().toggleTaskList().run(), false, 'Tâches')}
