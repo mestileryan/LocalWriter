@@ -1,122 +1,132 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useLiveQuery } from 'dexie-react-hooks'
+import type { JSONContent } from '@tiptap/react'
+import { db, createPage, deletePage, exportAll, importAll, type Page } from './db'
+import { Editor } from './Editor'
 
-function App() {
-  const [count, setCount] = useState(0)
+function useHashId(): [string | null, (id: string | null) => void] {
+  const read = () => window.location.hash.replace(/^#\/?/, '') || null
+  const [id, setId] = useState(read)
+  useEffect(() => {
+    const on = () => setId(read())
+    window.addEventListener('hashchange', on)
+    return () => window.removeEventListener('hashchange', on)
+  }, [])
+  return [id, (next) => { window.location.hash = next ? `/${next}` : '' }]
+}
 
+function PageTree({ pages, parentId, depth, currentId, onOpen, onAddChild }: {
+  pages: Page[]
+  parentId: string | null
+  depth: number
+  currentId: string | null
+  onOpen: (id: string) => void
+  onAddChild: (id: string) => void
+}) {
+  const items = pages.filter((p) => p.parentId === parentId)
   return (
     <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
+      {items.map((p) => (
+        <div key={p.id}>
+          <div className={`row${p.id === currentId ? ' current' : ''}`} style={{ paddingLeft: 12 + depth * 20 }}>
+            <button className="row-main" onClick={() => onOpen(p.id)}>
+              {p.title || 'Sans titre'}
+            </button>
+            <button className="row-add" aria-label="Ajouter une sous-page" onClick={() => onAddChild(p.id)}>＋</button>
+          </div>
+          <PageTree pages={pages} parentId={p.id} depth={depth + 1} currentId={currentId} onOpen={onOpen} onAddChild={onAddChild} />
         </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.tsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
-
-      <div className="ticks"></div>
-
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
-
-      <div className="ticks"></div>
-      <section id="spacer"></section>
+      ))}
     </>
   )
 }
 
-export default App
+function PageView({ page, onBack, onDelete }: { page: Page; onBack: () => void; onDelete: () => void }) {
+  const timer = useRef<number | undefined>(undefined)
+
+  const pending = useRef<Partial<Page>>({})
+
+  const flush = () => {
+    window.clearTimeout(timer.current)
+    const patch = pending.current
+    pending.current = {}
+    if (Object.keys(patch).length) db.pages.update(page.id, { ...patch, updatedAt: Date.now() })
+  }
+  const save = (patch: Partial<Page>) => {
+    pending.current = { ...pending.current, ...patch }
+    window.clearTimeout(timer.current)
+    timer.current = window.setTimeout(flush, 300)
+  }
+  // Écrit les modifications en attente quand on quitte la page ou l'onglet.
+  useEffect(() => {
+    window.addEventListener('pagehide', flush)
+    return () => {
+      window.removeEventListener('pagehide', flush)
+      flush()
+    }
+  }, [])
+
+  return (
+    <main className="page">
+      <header className="topbar">
+        <button className="back" onClick={onBack} aria-label="Retour à la liste">←</button>
+        <button className="danger" onClick={() => { if (confirm('Supprimer cette page et ses sous-pages ?')) onDelete() }}>Supprimer</button>
+      </header>
+      <input
+        className="title"
+        defaultValue={page.title}
+        placeholder="Sans titre"
+        onChange={(e) => save({ title: e.target.value })}
+      />
+      <Editor content={page.content} onChange={(content: JSONContent) => save({ content })} />
+    </main>
+  )
+}
+
+export default function App() {
+  const [id, setId] = useHashId()
+  const pages = useLiveQuery(() => db.pages.orderBy('updatedAt').reverse().toArray(), [])
+  const fileRef = useRef<HTMLInputElement>(null)
+  const current = useMemo(() => pages?.find((p) => p.id === id) ?? null, [pages, id])
+
+  const add = async (parentId: string | null) => setId(await createPage(parentId))
+
+  const doExport = async () => {
+    const url = URL.createObjectURL(new Blob([await exportAll()], { type: 'application/json' }))
+    const a = Object.assign(document.createElement('a'), { href: url, download: 'localwriter-backup.json' })
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+  const doImport = async (file: File) => {
+    try {
+      alert(`${await importAll(await file.text())} pages importées.`)
+    } catch {
+      alert('Fichier invalide.')
+    }
+  }
+
+  if (!pages) return null
+  return (
+    <div className={`app${current ? ' has-page' : ''}`}>
+      <nav className="sidebar">
+        <header className="topbar">
+          <h1>LocalWriter</h1>
+        </header>
+        <div className="list">
+          {pages.length === 0 && <p className="empty">Aucune page. Créez-en une avec le bouton ＋.</p>}
+          <PageTree pages={pages} parentId={null} depth={0} currentId={id} onOpen={setId} onAddChild={add} />
+        </div>
+        <footer className="sidebar-foot">
+          <button onClick={doExport}>Exporter</button>
+          <button onClick={() => fileRef.current?.click()}>Importer</button>
+          <input ref={fileRef} type="file" accept="application/json" hidden
+            onChange={(e) => { const f = e.target.files?.[0]; if (f) doImport(f); e.target.value = '' }} />
+        </footer>
+        <button className="fab" aria-label="Nouvelle page" onClick={() => add(null)}>＋</button>
+      </nav>
+      {current
+        ? <PageView key={current.id} page={current} onBack={() => setId(null)} onDelete={async () => { await deletePage(current.id); setId(null) }} />
+        : <main className="page placeholder-page"><p>Sélectionnez ou créez une page.</p></main>}
+    </div>
+  )
+}
