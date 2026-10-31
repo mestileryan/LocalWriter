@@ -15,6 +15,10 @@ interface Props {
 
 type KeyHandler = (event: KeyboardEvent) => boolean
 
+const DEBUG = window.location.search.includes('debug')
+// Journal visible dans le panneau ?debug=1 (voir DebugOverlay).
+const dbg = (msg: string) => { if (DEBUG) window.dispatchEvent(new CustomEvent('lw-debug', { detail: msg })) }
+
 export function Editor({ content, onChange }: Props) {
   const onChangeRef = useRef(onChange)
   useEffect(() => { onChangeRef.current = onChange })
@@ -98,7 +102,8 @@ function BlockHandle({ editor }: { editor: TipTapEditor }) {
   const [drop, setDrop] = useState<{ top: number; left: number; width: number } | null>(null)
   // Calque posé sur le bloc source pendant le glisser (ProseMirror effacerait une classe ajoutée à son DOM).
   const [ghost, setGhost] = useState<{ top: number; left: number; width: number; height: number } | null>(null)
-  const drag = useRef<{ line: Line; ls: Line[]; target?: number } | null>(null)
+  const drag = useRef<{ line: Line; ls: Line[]; target?: number; moves: number; cleanup: () => void } | null>(null)
+  const [armed, setArmed] = useState(false)
 
   const scroller = () => editor.view.dom.closest<HTMLElement>('.page')
   const rel = (el: Element) => relRect(scroller(), el)
@@ -113,55 +118,88 @@ function BlockHandle({ editor }: { editor: TipTapEditor }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [info, editor])
 
-  const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
-    const ls = lines(editor.state.doc)
-    const line = lineAt(ls, editor.state.selection.from)
-    if (!line) return
-    e.preventDefault()
-    const dom = editor.view.nodeDOM(line.pos)
-    if (!(dom instanceof HTMLElement)) return
-    e.currentTarget.setPointerCapture(e.pointerId)
-    drag.current = { line, ls }
-    setGhost(rel(dom))
-    navigator.vibrate?.(10)
-  }
-
-  const onPointerMove = (e: React.PointerEvent<HTMLButtonElement>) => {
+  const onMove = (clientY: number) => {
     const d = drag.current
     if (!d) return
+    d.moves++
     const sc = scroller()
     if (sc) {
       // Défilement automatique près des bords.
       const s = sc.getBoundingClientRect()
-      if (e.clientY < s.top + 60) sc.scrollTop -= 10
-      else if (e.clientY > s.bottom - 60) sc.scrollTop += 10
+      if (clientY < s.top + 60) sc.scrollTop -= 10
+      else if (clientY > s.bottom - 60) sc.scrollTop += 10
     }
     const edRect = editor.view.dom.getBoundingClientRect()
-    const hit = editor.view.posAtCoords({ left: edRect.left + 60, top: e.clientY })
-    if (!hit) return
+    const hit = editor.view.posAtCoords({ left: edRect.left + 60, top: clientY })
+    if (!hit) { if (d.moves % 10 === 1) dbg(`move ${d.moves} y=${Math.round(clientY)} hit=null`); return }
     // Ligne sous le doigt, n'importe où dans le document, sauf le bloc déplacé lui-même.
     const t = lineAt(d.ls, hit.pos)
     const src = d.line
-    if (!t || (t.pos >= src.pos && t.pos < src.pos + src.node.nodeSize)) { d.target = undefined; setDrop(null); return }
-    const tDom = editor.view.nodeDOM(t.pos)
-    if (!(tDom instanceof HTMLElement)) return
-    const r = rel(tDom)
-    if (!r) return
-    const box = tDom.getBoundingClientRect()
-    const after = e.clientY > box.top + box.height / 2
-    d.target = after ? t.pos + t.node.nodeSize : t.pos
-    setDrop({ top: after ? r.top + r.height : r.top, left: r.left, width: r.width })
+    const before = d.target
+    if (!t || (t.pos >= src.pos && t.pos < src.pos + src.node.nodeSize)) { d.target = undefined; setDrop(null) }
+    else {
+      const tDom = editor.view.nodeDOM(t.pos)
+      if (!(tDom instanceof HTMLElement)) return
+      const r = rel(tDom)
+      if (!r) return
+      const box = tDom.getBoundingClientRect()
+      const after = clientY > box.top + box.height / 2
+      d.target = after ? t.pos + t.node.nodeSize : t.pos
+      setDrop({ top: after ? r.top + r.height : r.top, left: r.left, width: r.width })
+    }
+    if (d.target !== before || d.moves % 10 === 1) dbg(`move ${d.moves} y=${Math.round(clientY)} hit=${hit.pos} cible=${d.target ?? '-'}`)
   }
 
-  const onPointerUp = () => {
+  const finish = (why: string) => {
     const d = drag.current
     if (!d) return
     drag.current = null
+    d.cleanup()
+    setArmed(false)
     setGhost(null)
     setDrop(null)
+    dbg(`drag fin (${why}) moves=${d.moves} cible=${d.target ?? '-'}`)
     if (d.target === undefined) return
     const tr = relocate(editor.state, d.line, d.target)
+    dbg(`relocate → ${tr ? 'ok' : 'refusé'}`)
     if (tr) editor.view.dispatch(tr)
+  }
+
+  // Le suivi du doigt est fait par des écouteurs natifs sur window, indépendants de la capture
+  // du pointeur, et touchmove est bloqué explicitement : aucun défilement pendant le glisser.
+  const onPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+    const ls = lines(editor.state.doc)
+    const line = lineAt(ls, editor.state.selection.from)
+    if (!line) { dbg('drag : aucune ligne sous le curseur'); return }
+    e.preventDefault()
+    const dom = editor.view.nodeDOM(line.pos)
+    if (!(dom instanceof HTMLElement)) return
+    try { e.currentTarget.setPointerCapture(e.pointerId) } catch { /* sans importance */ }
+    const pmove = (ev: PointerEvent) => onMove(ev.clientY)
+    const tmove = (ev: TouchEvent) => { ev.preventDefault(); const t = ev.touches[0]; if (t) onMove(t.clientY) }
+    const pup = () => finish('pointerup')
+    const pcancel = () => finish('pointercancel')
+    const tend = () => finish('touchend')
+    const ctx = (ev: Event) => ev.preventDefault()
+    window.addEventListener('pointermove', pmove)
+    window.addEventListener('pointerup', pup)
+    window.addEventListener('pointercancel', pcancel)
+    window.addEventListener('touchmove', tmove, { passive: false })
+    window.addEventListener('touchend', tend)
+    window.addEventListener('contextmenu', ctx)
+    const cleanup = () => {
+      window.removeEventListener('pointermove', pmove)
+      window.removeEventListener('pointerup', pup)
+      window.removeEventListener('pointercancel', pcancel)
+      window.removeEventListener('touchmove', tmove)
+      window.removeEventListener('touchend', tend)
+      window.removeEventListener('contextmenu', ctx)
+    }
+    drag.current = { line, ls, moves: 0, cleanup }
+    setArmed(true)
+    setGhost(rel(dom))
+    navigator.vibrate?.(10)
+    dbg(`drag début (${e.pointerType}) ligne=${line.pos} ${line.node.type.name}`)
   }
 
   if (!pos) return null
@@ -169,13 +207,11 @@ function BlockHandle({ editor }: { editor: TipTapEditor }) {
     <>
       <button
         type="button"
-        className="block-handle"
+        className={`block-handle${armed ? ' armed' : ''}`}
         aria-label="Déplacer le bloc (maintenir et glisser)"
         style={{ top: pos.top, left: pos.left }}
         onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
+        onContextMenu={(e) => e.preventDefault()}
       >
         ⋮⋮
       </button>
@@ -330,8 +366,10 @@ function DebugOverlay({ editor }: { editor: TipTapEditor }) {
       const t = e.target instanceof Element ? e.target.closest('button') : null
       if (t?.closest('.toolbar, .block-handle, .slash-menu')) log(`${e.type} ${t.getAttribute('aria-label') ?? t.textContent}`)
     }
-    const types = ['pointerdown', 'pointerup', 'mousedown', 'click', 'touchend']
+    const types = ['pointerdown', 'pointerup', 'pointercancel', 'mousedown', 'click', 'touchend']
     types.forEach((ty) => document.addEventListener(ty, onEv, true))
+    const onDbg = (e: Event) => log((e as CustomEvent<string>).detail)
+    window.addEventListener('lw-debug', onDbg)
     const onBlur = () => log('editor blur')
     const onFocus = () => log('editor focus')
     editor.on('blur', onBlur)
@@ -341,6 +379,7 @@ function DebugOverlay({ editor }: { editor: TipTapEditor }) {
     return () => {
       window.clearInterval(id)
       types.forEach((ty) => document.removeEventListener(ty, onEv, true))
+      window.removeEventListener('lw-debug', onDbg)
       editor.off('blur', onBlur)
       editor.off('focus', onFocus)
       window.removeEventListener('error', onErr)
